@@ -1,0 +1,21 @@
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restart-job-controller
+  namespace: js-qa
+spec:
+  schedule: "0 5 * * *"  # Todo dia às 05:00
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          containers:
+            - name: kubectl
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - kubectl rollout restart deployment job-controller -n js-qa
+          restartPolicy: OnFailure
