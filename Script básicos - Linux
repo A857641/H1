@@ -1,0 +1,86 @@
+
+Realizar a limpeza das pastas abaixo:
+
+cd /VMDS/backup/
+rm -rI sw-data_new/
+
+cd /backup/
+rm -rI sw-data_new/
+
+cd /VMDS/ds_transfer/ds_electric
+rm -rI *
+
+Realizar parada dos Serviços:
+
+Parar servidores de banco no NetXMS - Colocar em manutenção
+Parar Pods(JS, GSS e STS) - Via Headlamp
+SWMFS: 
+
+sh /opt/swmfs_stop.sh
+ps -ef | grep swmfs
+find /VMDS/ -name *.jou
+
+Realizar cópia da base para pasta /VMDS/backup local nos 4 Serviodres:
+
+cd /VMDS/backup/
+cp -rpv /VMDS/sw-data_new/ /VMDS/backup/
+
+Subi o serviço SWMFS:
+
+sh /opt/swmfs_start.sh
+ps -ef | grep swmfs
+
+Validar cópia da base para o disco local /VMDS/backup:
+
+find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db/ds_electric|/VMDS/backup/sw-data_new/sw_prd_db/ds_electric|g' {} +
+find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db|/VMDS/backup/sw-data_new/sw_prd_db|g' {} +
+find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db/ds_conductors|/VMDS/backup/sw-data_new/sw_prd_db/ds_conductors|g' {} +
+find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db/ds_structural|/VMDS/backup/sw-data_new/sw_prd_db/ds_structural|g' {} +
+
+
+Realizar cópia da base disco /backup:
+
+cd /backup/
+tmux
+rsync -aHAX --numeric-ids --progress /VMDS/backup/ /backup/
+
+Alterar aquivos .sfi para validar a copia da base no disco /backup:
+
+find /backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/backup/sw-data_new/sw_prd_db/ds_electric|/backup/sw-data_new/sw_prd_db/ds_electric|g' {} +
+find /backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/backup/sw-data_new/sw_prd_db|/backup/sw-data_new/sw_prd_db|g' {} +
+find /backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/backup/sw-data_new/sw_prd_db/ds_conductors|/backup/sw-data_new/sw_prd_db/ds_conductors|g' {} +
+find /backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/backup/sw-data_new/sw_prd_db/ds_structural|/backup/sw-data_new/sw_prd_db/ds_structural|g' {} +
+
+Finalizar as sessões tmux abertas:
+
+tmux kill-server
+
+Realizar a limpeza da pasta abaixo:
+
+cd /VMDS/backup/
+rm -rI sw-data_new/
+
+Realizar cópia da base para pasta /VMDS/backup local nos 4 Serviodres:
+
+cd /VMDS/backup/
+cp -rpv /VMDS/sw-data_new/ /VMDS/backup/
+
+Caso necessário conceda as permissões abaixo no script:
+
+chmod x start_eo53_split.sh
+chmod 777 start_eo53_split.sh
+
+
+Remover arquivos gdb do destino:
+
+find /VMDS/sw-data_new/sw_prd_db/ds_electric -name "*gdb*" -print
+find /VMDS/sw-data_new/sw_prd_db/ds_electric -name "*gdb*" -exec rm -rf {} +
+
+Acessar o diretorio onde estão os arquivos gdb que serão copiados:
+
+find /VMDS/ds_transfer/ds_electric -name "*gdb*" -print
+cd /VMDS/ds_transfer/ds_electric
+\cp -rpv *gdb* /VMDS/sw-data_new/sw_prd_db/ds_electric/
+
+
+
