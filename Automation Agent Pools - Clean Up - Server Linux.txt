@@ -1,0 +1,189 @@
+steps:
+- bash: |
+   
+   #!/usr/bin/env bash
+   # add-safe-directory-s.sh
+   # Adiciona cada _work/<N>/s ao git config --global safe.directory
+   
+   #set -euo pipefail
+   
+   # Uso:
+   #   ./add-safe-directory-s.sh /caminho/para/_work
+   #   AGENT_WORKDIR=/caminho/para/_work ./add-safe-directory-s.sh
+   #   DRY_RUN=1 ./add-safe-directory-s.sh /caminho/para/_work
+   #
+   # Padrões:
+   #   - Se não informado via argumento, usa $AGENT_WORKDIR
+   #   - Se não houver, usa '/agent/_work' (ajuste conforme seu ambiente)
+   #
+   # Recomendação:
+   #   - Execute como o MESMO usuário do serviço do agente (mesmo $HOME),
+   #     pois a config é --global (~/.gitconfig desse usuário).
+   
+   WORK_ROOT="${1:-${AGENT_WORKDIR:-/agent01/_work}}"
+   DRY_RUN="${DRY_RUN:-0}"
+   
+   log()  { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*"; }
+   warn() { log "WARN: $*"; }
+   err()  { log "ERROR: $*" >&2; }
+   
+   if [[ ! -d "$WORK_ROOT" ]]; then
+     err "Diretório não encontrado: $WORK_ROOT"
+     echo "Uso: $0 <CAMINHO_PARA__work>  (ou defina AGENT_WORKDIR)"
+     exit 1
+   fi
+   
+   log "Procurando slots em: $WORK_ROOT (DRY_RUN=$DRY_RUN)"
+   
+   # Lista diretórios numéricos do nível imediato (ex.: _work/1, _work/2, ...)
+   mapfile -t RUN_DIRS < <(find "$WORK_ROOT" -maxdepth 1 -mindepth 1 -type d -regex '.*/[0-9]+$' | sort -V)
+   
+   if [[ ${#RUN_DIRS[@]} -eq 0 ]]; then
+     warn "Nenhum diretório numérico (_work/<n>) encontrado."
+     exit 0
+   fi
+   
+   added=0
+   skipped=0
+   notfound=0
+   
+   for run in "${RUN_DIRS[@]}"; do
+     sdir="$run/s"
+     if [[ ! -d "$sdir" ]]; then
+       warn "Sem diretório 's' em: $run"
+       ((notfound++))
+       continue
+     fi
+   
+     # Caminho absoluto e normalizado
+     sdir_abs="$(cd "$sdir" && pwd -P)"
+   
+     # Verifica se já está listado em safe.directory para evitar duplicações
+     # git config --global --get-all safe.directory pode falhar se não existir; por isso '|| true'
+     existing="$(git config --global --get-all safe.directory 2>/dev/null || true)"
+     if echo "$existing" | grep -Fx -- "$sdir_abs" >/dev/null 2>&1; then
+       log "Já presente em safe.directory: $sdir_abs"
+       ((skipped++))
+       continue
+     fi
+   
+     if [[ "$DRY_RUN" == "1" ]]; then
+       log "DRY-RUN: git config --global --add safe.directory \"$sdir_abs\""
+       ((skipped++))
+     else
+       log "Adicionando a safe.directory: $sdir_abs"
+       git config --global --add safe.directory "$sdir_abs"
+       ((added++))
+     fi
+   done
+   
+   log "Resumo: adicionados=$added; ignorados=$skipped; sem 's'=$notfound"
+   log "Concluído."
+   
+  displayName: 'Git Config'
+  
+  
+steps:
+- bash: |
+   #!/usr/bin/env bash
+   # gc-azure-agent.sh
+   # Executa 'git gc --aggressive --prune=now' em todos os repos Git sob <_work>/<N>/s
+   
+   #set -euo pipefail
+   
+   # Uso:
+   #   ./gc-azure-agent.sh /caminho/para/_work
+   #   AGENT_WORKDIR=/caminho/para/_work ./gc-azure-agent.sh
+   #   DRY_RUN=1 ./gc-azure-agent.sh /caminho/para/_work
+   #
+   # Padrões:
+   #   - Se não informado via argumento, usa $AGENT_WORKDIR
+   #   - Caso não haja, usa '/agent/_work' (ajuste conforme seu agente)
+   #
+   # Observações:
+   #   - Execute como o mesmo usuário do agente (evita problemas de permissão).
+   #   - Garanta que não há jobs rodando durante a manutenção.
+   
+   WORK_ROOT="${1:-${AGENT_WORKDIR:-/agent01/_work}}"
+   DRY_RUN="${DRY_RUN:-0}"
+   
+   log() { printf '[%(%Y-%m-%d %H:%M:%S)T] %s\n' -1 "$*"; }
+   warn() { log "WARN: $*"; }
+   err() { log "ERROR: $*" >&2; }
+   
+   if [[ ! -d "$WORK_ROOT" ]]; then
+     err "Diretório não encontrado: $WORK_ROOT"
+     echo "Uso: $0 <CAMINHO_PARA__work>  (ou defina AGENT_WORKDIR)"
+     exit 1
+   fi
+   
+   log "Iniciando GC nos repositórios em: $WORK_ROOT  (DRY_RUN=$DRY_RUN)"
+   
+   # Lista diretórios numéricos de nível 1 (ex.: _work/1, _work/2 ...)
+   mapfile -t RUN_DIRS < <(find "$WORK_ROOT" -maxdepth 1 -mindepth 1 -type d -regex '.*/[0-9]+$' | sort -V)
+   
+   if [[ ${#RUN_DIRS[@]} -eq 0 ]]; then
+     warn "Nenhum diretório de execução (_work/<número>) encontrado em: $WORK_ROOT"
+     exit 0
+   fi
+   
+   total_repos=0
+   processed=0
+   skipped=0
+   
+   run_git_gc() {
+     local repo="$1"
+   
+     if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+       warn "Não é um repositório Git: $repo"
+       return 1
+     fi
+   
+     ((total_repos++))
+   
+     if [[ "$DRY_RUN" == "1" ]]; then
+       log "DRY-RUN: git -C '$repo' gc --aggressive --prune=now"
+       ((skipped++))
+       return 0
+     fi
+   
+     log "Executando GC em: $repo"
+     if git -C "$repo" gc --aggressive --prune=now; then
+       ((processed++))
+       log "OK: $repo"
+     else
+       err "Falha no GC: $repo"
+       return 1
+     fi
+   }
+   
+   for run in "${RUN_DIRS[@]}"; do
+     sdir="$run/s"
+     if [[ ! -d "$sdir" ]]; then
+       warn "Sem diretório 's' em: $run (talvez esse slot nunca foi usado)"
+       continue
+     fi
+   
+     # 1) Se _work/<n>/s for repo, processa
+     if git -C "$sdir" rev-parse --git-dir >/dev/null 2>&1; then
+       run_git_gc "$sdir" || true
+     fi
+   
+     # 2) Repositórios Git aninhados dentro de s (submódulos, múltiplos checkouts)
+     #    Considera .git sendo diretório ou arquivo (worktrees/submódulos modernos)
+     #    Procuramos por diretórios/arquivos chamados ".git" e subimos 1 nível.
+     while IFS= read -r -d '' git_marker; do
+       repo_dir="$(dirname "$git_marker")"
+       # Evita rodar 2x no mesmo sdir se já foi acima
+       if [[ "$repo_dir" != "$sdir" ]]; then
+         run_git_gc "$repo_dir" || true
+       fi
+     done < <(find "$sdir" \( -type d -name ".git" -o -type f -name ".git" \) -print0)
+   done
+   
+   log "Resumo: repositorórios detectados=$total_repos; processados=$processed; em DRY-RUN (skip)=$skipped"
+   log "Concluído."
+   
+   
+   
+  displayName: 'Compressão de Git'  
