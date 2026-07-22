@@ -1,0 +1,112 @@
+steps:
+- powershell: |
+   $ErrorActionPreference = "Continue"
+   
+   # ==============================
+   # CONFIG
+   # ==============================
+   
+   $WorkRoot = "C:\agent\_work"
+   $MinFreeGB = 5
+   
+   $cleanupDone = $false  # garante que só remove uma vez
+   
+   function Log($m) {
+     $t = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+     Write-Host "[$t] $m"
+   }
+   
+   function Get-FreeGB {
+     $driveLetter = (Split-Path $WorkRoot -Qualifier).Replace(":", "")
+     $drive = Get-PSDrive -Name $driveLetter
+     return [math]::Round($drive.Free / 1GB, 2)
+   }
+   
+   # ==============================
+   # BUSCA REPOSITÓRIOS
+   # ==============================
+   
+   Log "Buscando diretórios .git..."
+   
+   $gitDirs = Get-ChildItem -Path $WorkRoot -Recurse -Directory -Force -Filter ".git" -ErrorAction SilentlyContinue
+   
+   if (-not $gitDirs) {
+     Log "Nenhum repositório encontrado."
+     exit 0
+   }
+   
+   Log "Encontrados $($gitDirs.Count) repositórios"
+   
+   # ==============================
+   # LOOP
+   # ==============================
+   
+   foreach ($gitDir in $gitDirs) {
+   
+     $repoRoot = Split-Path $gitDir.FullName -Parent
+   
+     Log "----------------------------------------"
+     Log "Processando: $repoRoot"
+   
+     # ==============================
+     # CHECK ESPAÇO
+     # ==============================
+   
+     $freeGB = Get-FreeGB
+     Log "Espaço livre: $freeGB GB"
+   
+     if ($freeGB -lt $MinFreeGB -and -not $cleanupDone) {
+   
+       Log "Espaço insuficiente. Executando limpeza única (_work\1)..."
+   
+       $pathToDelete = Join-Path $WorkRoot "1"
+   
+       if (Test-Path $pathToDelete) {
+         try {
+           Remove-Item $pathToDelete -Recurse -Force -ErrorAction Stop
+           Log "OK: _work\\1 removido"
+           $cleanupDone = $true
+         } catch {
+           Log "Erro ao remover: $_"
+         }
+       } else {
+         Log "Pasta _work\\1 não encontrada"
+         $cleanupDone = $true
+       }
+   
+       # Recalcula espaço
+       $freeGB = Get-FreeGB
+       Log "Espaço após limpeza: $freeGB GB"
+     }
+   
+     # ==============================
+     # SE AINDA NÃO TEM ESPAÇO → PULA
+     # ==============================
+   
+     if ($freeGB -lt $MinFreeGB) {
+       Log "Espaço insuficiente. Pulando este repositório."
+       continue
+     }
+   
+     # ==============================
+     # GIT GC
+     # ==============================
+   
+     try {
+       Push-Location $repoRoot
+   
+       git config --global --add safe.directory $repoRoot
+   
+       git gc --aggressive --prune=now
+   
+       Pop-Location
+   
+       Log "OK: git gc concluído"
+   
+     } catch {
+       Log "Erro no git gc: $_"
+     }
+   }
+   
+   Log "Concluído"
+  displayName: 'Limpeza de Disco C:\agent'
