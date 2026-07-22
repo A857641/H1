@@ -12,8 +12,6 @@ rm -rI *
 
 Realizar parada dos Serviços:
 
-Parar servidores de banco no NetXMS - Colocar em manutenção
-Parar Pods(JS, GSS e STS) - Via Headlamp
 SWMFS: 
 
 sh /opt/swmfs_stop.sh
@@ -36,7 +34,6 @@ find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-dat
 find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db|/VMDS/backup/sw-data_new/sw_prd_db|g' {} +
 find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db/ds_conductors|/VMDS/backup/sw-data_new/sw_prd_db/ds_conductors|g' {} +
 find /VMDS/backup/sw-data_new -type f -name "*.sfi" -exec sed -i 's|/VMDS/sw-data_new/sw_prd_db/ds_structural|/VMDS/backup/sw-data_new/sw_prd_db/ds_structural|g' {} +
-
 
 Realizar cópia da base disco /backup:
 
@@ -70,7 +67,6 @@ Caso necessário conceda as permissões abaixo no script:
 chmod x start_eo53_split.sh
 chmod 777 start_eo53_split.sh
 
-
 Remover arquivos gdb do destino:
 
 find /VMDS/sw-data_new/sw_prd_db/ds_electric -name "*gdb*" -print
@@ -82,5 +78,16 @@ find /VMDS/ds_transfer/ds_electric -name "*gdb*" -print
 cd /VMDS/ds_transfer/ds_electric
 \cp -rpv *gdb* /VMDS/sw-data_new/sw_prd_db/ds_electric/
 
+Realizar Cópia de base entre servidores:
 
+rsync -aHAX \
+  --numeric-ids \
+  --partial \
+  --append-verify \
+  --progress \
+  --human-readable \
+  --stats \
+  --log-file=/tmp/rsync_vmdsprd_to_vmdsdev-avmd04.log \
+  -e "ssh -T -o ServerAliveInterval=60 -o ServerAliveCountMax=10" \
+  /VMDS/backup/ root@ip:"path da pasta da base"
 
