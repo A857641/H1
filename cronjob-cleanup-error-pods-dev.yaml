@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cleanup-dev-sa
+  namespace: js-dev
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cleanup-dev-binding
+subjects:
+- kind: ServiceAccount
+  name: cleanup-dev-sa
+  namespace: js-dev
+roleRef:
+  kind: ClusterRole
+  name: cleanup-error-pods-global-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup-error-pods-dev
+  namespace: js-dev
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: cleanup-dev-sa
+          restartPolicy: OnFailure
+
+          containers:
+          - name: cleaner
+            image: bitnami/kubectl:latest
+            imagePullPolicy: IfNotPresent
+
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "===== INICIO CLEANUP $(date) ====="
+
+                total_deleted=0
+
+                for ns in js-dev gss-dev sts-dev; do
+                  echo "---- Namespace: $ns ----"
+
+                  pods=$(kubectl get pods -n $ns -o jsonpath='{.items[*].metadata.name}')
+
+                  for pod in $pods; do
+
+                    phase=$(kubectl get pod $pod -n $ns -o jsonpath='{.status.phase}')
+                    reason=$(kubectl get pod $pod -n $ns -o jsonpath='{.status.reason}' 2>/dev/null)
+
+                    crash=$(kubectl get pod $pod -n $ns \
+                      -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)
+
+                    # Evicted
+                    if [ "$reason" = "Evicted" ]; then
+                      echo "Deletando pod (Evicted): $pod"
+                      kubectl delete pod $pod -n $ns --force --grace-period=0
+                      total_deleted=$((total_deleted+1))
+                      continue
+                    fi
+
+                    # Error / Failed
+                    if [ "$phase" = "Failed" ]; then
+                      echo "Deletando pod (Error/Failed): $pod"
+                      kubectl delete pod $pod -n $ns --force --grace-period=0
+                      total_deleted=$((total_deleted+1))
+                      continue
+                    fi
+
+                    # CrashLoopBackOff
+                    if [ "$crash" = "CrashLoopBackOff" ]; then
+                      echo "Deletando pod (CrashLoopBackOff): $pod"
+                      kubectl delete pod $pod -n $ns --force --grace-period=0
+                      total_deleted=$((total_deleted+1))
+                    fi
+
+                  done
+                done
+
+                echo "===== RESUMO ====="
+                echo "Pods deletados: $total_deleted"
+                echo "===== FIM $(date) ====="
