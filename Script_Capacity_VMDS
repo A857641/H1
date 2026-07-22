@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+
+EMAIL="gabriel.passos@atos.net"
+HOST=$(hostname)
+DATA=$(date '+%d/%m/%Y')
+
+BASE_DIR="/tmp/gis_capacity"
+mkdir -p "$BASE_DIR"
+
+HIST="$BASE_DIR/history_$HOST.log"
+CSV="$BASE_DIR/history_$HOST.csv"
+TMP_SUM="$BASE_DIR/summary.tmp"
+
+ROOT_DIR="/VMDS/sw-data_new/sw_prd_db"
+
+MIN_BYTES=4096
+MAX_BYTES=16777220096
+
+> "$TMP_SUM"
+
+if [ ! -f "$CSV" ]; then
+  echo "DATA;HOST;DIRETORIO;TIPO;TAMANHO_BASE_CONSUMIDA_GB;CRESCIMENTO_DIARIO_BASE_GB;ARQUIVO_ATUAL;TAMANHO_ARQ_ATUAL_GB;TOTAL_DE_ARQUIVOS;%_TOTAL_DE_USO_BASE;MUDOU_ARQUIVO" > "$CSV"
+fi
+
+process_dir() {
+  DIR="$1"
+  cd "$DIR" 2>/dev/null || return
+
+  process_tipo() {
+    label="$1"
+    prefix="$2"
+
+    files=$(find . -maxdepth 1 -type f \
+      \( -name "${prefix}.ds" -o -name "${prefix}-*.ds" \) \
+      -printf "%T@ %p\n" 2>/dev/null | sort -nr | cut -d' ' -f2-)
+
+    [ -z "$files" ] && return
+
+    total=0
+    current=""
+    current_size=0
+    total_files=$(echo "$files" | wc -l)
+
+    while IFS= read -r f; do
+      size=$(stat -c %s "$f" 2>/dev/null)
+      [ -z "$size" ] && continue
+
+      total=$((total + size))
+
+      if (( size > MIN_BYTES && size < MAX_BYTES )); then
+        current=$(basename "$f")
+        current_size=$size
+      fi
+    done <<< "$files"
+
+    if (( total > 0 )); then
+      gb_total=$(awk "BEGIN {printf \"%.6f\", $total/1024/1024/1024}")
+      gb_current=$(awk "BEGIN {printf \"%.6f\", $current_size/1024/1024/1024}")
+
+      #NOVO CÁLCULO REAL DE CAPACIDADE
+      capacidade_total_bytes=$(( total_files * MAX_BYTES ))
+
+      perc=$(awk -v usado="$total" -v capacidade="$capacidade_total_bytes" 'BEGIN {
+        if (capacidade == 0) { print 0; exit }
+        printf "%.6f", (usado/capacidade)*100
+      }')
+
+      echo "$DIR|$label|$gb_total|$current|$gb_current|$total_files|$perc" >> "$TMP_SUM"
+    fi
+  }
+
+  process_tipo "RWO" "rwo"
+  process_tipo "RWO_PART2" "rwo_part2"
+  process_tipo "RWO_PART3" "rwo_part3"
+  process_tipo "RWO_CONDUCTORS" "rwo_conductors"
+  process_tipo "RWO_STRUCTURAL" "rwo_structural"
+  process_tipo "GDB" "gdb"
+  process_tipo "GDB_PART2" "gdb_part2"
+  process_tipo "AUDIT" "audit"
+  process_tipo "AUDIT_HISTORY" "audit_history"
+  process_tipo "DD" "dd"
+  process_tipo "RASTER" "raster"
+  process_tipo "CASE" "case"
+  process_tipo "DD_EXTENSION" "dd_extension"
+  process_tipo "ACE" "ace"
+  process_tipo "AUTH" "auth"
+  process_tipo "CS_CONFIG" "cs_config"
+  process_tipo "JOB_QUEUE" "job_queue"
+  process_tipo "SCRAPBOOK" "scrapbook"
+  process_tipo "SCRATCH" "scratch"
+  process_tipo "STYLE" "style"
+  process_tipo "THEMATICS" "thematics"
+}
+
+find "$ROOT_DIR" -type f -name "*.ds" 2>/dev/null | while read -r FILE
+do dirname "$FILE"
+done | sort -u | while read -r DIR
+do process_dir "$DIR"
+done
+
+# resto do script permanece igual
+awk -v d="$DATA" '{print d "|" $0}' "$TMP_SUM" >> "$HIST"
+PREV=$(awk -F'|' '$1!=d {print $1}' d="$DATA" "$HIST" | tail -1)
+
+awk -F'|' -v today="$DATA" -v prev="$PREV" -v host="$HOST" '
+function br(n,c){s=sprintf("%."c"f",n);gsub("\\.",",",s);return s}
+BEGIN{
+  while((getline<"'$HIST'")>0){
+    split($0,f,"|")
+    if(f[1]==prev){
+      k=f[2]"|"f[3]
+      old[k]=f[4]+0
+      oldf[k]=f[5]
+    }
+  }
+}
+{
+  k=$1"|"$2
+  total=$3+0
+  file=$4
+  cur=$5+0
+  total_files=$6
+  perc=$7+0
+
+  diff = (k in old)? total-old[k]:0
+  mudou = (k in oldf && oldf[k]!=file)?"SIM":"NAO"
+
+  printf "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n",
+    today,host,$1,$2,
+    br(total,2),
+    br(diff,3),
+    file,
+    br(cur,2),
+    total_files,
+    br(perc,2),
+    mudou
+}' "$TMP_SUM" >> "$CSV"
+
+echo "OK -> $CSV"
