@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cleanup-eo-web-sa
+  namespace: eo-web
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cleanup-eo-web-binding
+subjects:
+- kind: ServiceAccount
+  name: cleanup-eo-web-sa
+  namespace: eo-web
+roleRef:
+  kind: ClusterRole
+  name: cleanup-error-pods-global-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cleanup-error-pods-eo-web
+  namespace: eo-web
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: cleanup-eo-web-sa
+          restartPolicy: OnFailure
+
+          containers:
+          - name: cleaner
+            image: bitnami/kubectl:latest
+            imagePullPolicy: IfNotPresent
+
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "===== INICIO CLEANUP EO-WEB $(date) ====="
+
+                total_deleted=0
+
+                kubectl get pods -n eo-web -o json | jq -c '.items[]' | while read podjson; do
+
+                  pod=$(echo $podjson | jq -r '.metadata.name')
+                  phase=$(echo $podjson | jq -r '.status.phase')
+                  reason=$(echo $podjson | jq -r '.status.reason // empty')
+
+                  crash=$(echo $podjson | jq -r '.status.containerStatuses[]?.state.waiting.reason // empty' 2>/dev/null | grep -m1 CrashLoopBackOff || true)
+
+                  # Evicted
+                  if [ "$reason" = "Evicted" ]; then
+                    echo "Deletando pod (Evicted): $pod"
+                    kubectl delete pod $pod -n eo-web --force --grace-period=0
+                    total_deleted=$((total_deleted+1))
+                    continue
+                  fi
+
+                  # Error / Failed
+                  if [ "$phase" = "Failed" ]; then
+                    echo "Deletando pod (Error/Failed): $pod"
+                    kubectl delete pod $pod -n eo-web --force --grace-period=0
+                    total_deleted=$((total_deleted+1))
+                    continue
+                  fi
+
+                  # CrashLoopBackOff
+                  if [ "$crash" = "CrashLoopBackOff" ]; then
+                    echo "Deletando pod (CrashLoopBackOff): $pod"
+                    kubectl delete pod $pod -n eo-web --force --grace-period=0
+                    total_deleted=$((total_deleted+1))
+                  fi
+
+                done
+
+                echo "===== RESUMO ====="
+                echo "Pods deletados: $total_deleted"
+                echo "===== FIM $(date) ====="
